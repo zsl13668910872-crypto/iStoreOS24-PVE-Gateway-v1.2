@@ -1,0 +1,189 @@
+name: Build iStoreOS 24.10 PVE Gateway v1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      mihomo_version:
+        description: "内置 mihomo 内核版本（MetaCubeX release tag）"
+        type: string
+        default: "v1.19.13"
+      publish_release:
+        description: "发布到 Releases"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: 释放磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: 安装编译依赖（官方清单）
+        run: |
+          sudo apt-get update
+          sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+
+      - uses: actions/checkout@v4
+
+      - name: 前置自检（仓库结构必须完整）
+        run: |
+          echo "仓库根目录内容："
+          ls -la "${{ github.workspace }}"
+          missing=0
+          for p in diy/feeds.custom.conf diy/add-packages.sh config/istoreos-x86_64-pve.config files/etc; do
+            if [ ! -e "${{ github.workspace }}/$p" ]; then
+              echo "FATAL 缺失: $p"
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo ""
+            echo "=========================================================="
+            echo " 仓库结构不完整。正确做法：把 zip 解压后文件夹【内容】"
+            echo " （含隐藏的 .github 目录）推送到仓库根目录，而不是把"
+            echo " iStoreOS24-PVE-Gateway-v1.0/ 这个外层文件夹推进去。"
+            echo "=========================================================="
+            exit 1
+          fi
+          echo "结构完整，继续。"
+
+      - name: ccache 缓存
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-istoreos24-${{ github.run_id }}
+          restore-keys: ccache-istoreos24-
+
+      - name: 克隆 iStoreOS 24.10 源码
+        run: git clone --depth 1 -b istoreos-24.10 https://github.com/istoreos/istoreos.git "${{ github.workspace }}/source"
+
+      - name: 追加第三方 feed（不覆盖官方 feeds）
+        working-directory: source
+        run: |
+          cat "${{ github.workspace }}/diy/feeds.custom.conf" >> feeds.conf.default
+          cat feeds.conf.default
+
+      - name: 更新并安装 feeds
+        working-directory: source
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 安装插件包（缺失即失败，不允许静默跳过）
+        working-directory: source
+        run: bash "${{ github.workspace }}/diy/add-packages.sh"
+
+      - name: 烘焙 mihomo 内核与 GEO 数据库进固件（杜绝运行时联网安装）
+        working-directory: source
+        env:
+          MIHOMO_VER: ${{ inputs.mihomo_version }}
+        run: |
+          set -e
+          CORE_DIR="files/etc/openclash/core"
+          mkdir -p "$CORE_DIR" files/etc/openclash
+          echo "==> 下载 mihomo ${MIHOMO_VER} linux-amd64-v3"
+          curl -fL --retry 3 -o /tmp/mihomo.gz \
+            "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VER}/mihomo-linux-amd64-v3-${MIHOMO_VER}.gz"
+          gunzip -f /tmp/mihomo.gz
+          mv /tmp/mihomo "$CORE_DIR/clash_meta"
+          chmod 0755 "$CORE_DIR/clash_meta"
+          echo "==> 验证内核可执行（runner 同为 x86_64，直接跑版本号）"
+          "$CORE_DIR/clash_meta" -v
+          echo "==> 下载 GEO 数据库（GeoIP/GeoSite/Country.mmdb）"
+          curl -fL --retry 3 -o files/etc/openclash/GeoIP.dat \
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geoip.dat"
+          curl -fL --retry 3 -o files/etc/openclash/GeoSite.dat \
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/geosite.dat"
+          curl -fL --retry 3 -o files/etc/openclash/Country.mmdb \
+            "https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/country.mmdb"
+          ls -lh files/etc/openclash/ "$CORE_DIR"
+          for f in files/etc/openclash/GeoIP.dat files/etc/openclash/GeoSite.dat files/etc/openclash/Country.mmdb "$CORE_DIR/clash_meta"; do
+            [ -s "$f" ] || { echo "FATAL: $f 下载失败或为空"; exit 1; }
+          done
+          echo "OK: 内核与 GEO 数据库已就位"
+
+      - name: 应用配置与 files 覆盖层
+        working-directory: source
+        run: |
+          cp "${{ github.workspace }}/config/istoreos-x86_64-pve.config" .config
+          cp -r "${{ github.workspace }}/files/." files/
+          make defconfig
+          echo "==> 落账检查（以下必须全部 =y）"
+          for k in CONFIG_PACKAGE_luci-app-openclash CONFIG_PACKAGE_qemu-ga \
+                   CONFIG_PACKAGE_luci-ssl-openssl CONFIG_PACKAGE_libustream-openssl \
+                   CONFIG_PACKAGE_kmod-tun CONFIG_PACKAGE_kmod-nft-tproxy \
+                   CONFIG_PACKAGE_dnsmasq-full \
+                   CONFIG_GRUB_EFI_IMAGES; do
+            grep -q "^${k}=y" .config && echo "OK: $k" || { echo "FATAL 缺失: $k"; exit 1; }
+          done
+          echo "==> 反向检查（以下必须未选中）"
+          for k in CONFIG_PACKAGE_libustream-mbedtls CONFIG_RUBY_ENABLE_YJIT CONFIG_PACKAGE_dnsmasq; do
+            grep -q "^${k}=y" .config && { echo "FATAL 不应选中: $k"; exit 1; } || echo "OK 未选: $k"
+          done
+          echo "==> 确认内核文件将被打进固件"
+          ls -lh files/etc/openclash/core/clash_meta
+
+      - name: 预下载源码包
+        working-directory: source
+        run: make download -j8
+
+      - name: 编译
+        working-directory: source
+        run: |
+          set -o pipefail
+          make -j"$(nproc)" 2>&1 | tee build.log || \
+          { echo "==> 并行失败，单线程详细模式重试"; make -j1 V=s 2>&1 | tee -a build.log; }
+
+      - name: 编译失败自动诊断（提取真正的报错行）
+        if: failure()
+        working-directory: source
+        run: |
+          echo "===== 编译日志中的错误（第一个 Error 才是根因）====="
+          grep -n -B2 -m 60 -E "Collected errors|Cannot install|check_data_file_clashes|satisfy_dependencies_for|pkg_run_script|opkg_|Error [0-9]+|ERROR:|error: |fatal error|No space left" build.log | tail -80 || true
+          echo ""
+          echo "===== 日志末尾 120 行 ====="
+          tail -120 build.log
+          echo ""
+          echo "===== 磁盘占用 ====="
+          df -h / /home 2>/dev/null || df -h
+
+      - name: 上传编译日志（无论成败）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_id }}
+          path: source/build.log
+          if-no-files-found: ignore
+
+      - name: 整理产物（只收镜像/清单/校验和/配置）
+        id: pkg
+        working-directory: source
+        run: |
+          OUT="${{ github.workspace }}/firmware"
+          mkdir -p "$OUT"
+          cp -f bin/targets/x86/64/*.img.gz "$OUT"/
+          cp -f bin/targets/x86/64/*.manifest "$OUT"/ 2>/dev/null || true
+          cp -f bin/targets/x86/64/sha256sums "$OUT"/ 2>/dev/null || true
+          cp -f .config "$OUT"/build.config
+          ls -lh "$OUT"
+          echo "date=$(date +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        with:
+          name: iStoreOS24-PVE-Gateway-v1.0-${{ steps.pkg.outputs.date }}
+          path: firmware/
+
+      - name: 发布 Release
+        if: inputs.publish_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: istoreos24-v1.0-${{ steps.pkg.outputs.date }}
+          name: iStoreOS 24.10 PVE Gateway v1.0 (${{ steps.pkg.outputs.date }})
+          files: firmware/*
