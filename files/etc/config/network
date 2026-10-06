@@ -1,0 +1,28 @@
+# 复刻 VUM 一键部署版 iStoreOS24 旁路由的可用网络配置
+# 单臂旁路由：只有一个 br-lan（eth0），无 wan/wan6 接口
+
+config device
+        option name 'br-lan'
+        option type 'bridge'
+        list ports 'eth0'
+
+config interface 'lan'
+        option device 'br-lan'
+        option proto 'static'
+        option ipaddr '10.10.10.78'
+        option netmask '255.255.255.0'
+        option broadcast '10.10.10.255'
+        option gateway '10.10.10.1'
+        # 与 VUM 版一致：lan 自带 ULA 地址 fd00::78/64
+        option ip6addr 'fd00::78/64'
+        # 旁路由自身上网使用的 DNS（对应 VUM 版接口高级设置里的 223.5.5.5 / 119.29.29.29）
+        option peerdns '0'
+        list dns '223.5.5.5'
+        list dns '119.29.29.29'
+
+# 复刻 VUM 版的第二个接口：DHCPv6 客户端，从主路由（RouterOS）获取公网 IPv6 地址
+config interface 'IPV6'
+        option proto 'dhcpv6'
+        option device 'br-lan'
+        option reqaddress 'try'
+        option reqprefix 'no'

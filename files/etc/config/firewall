@@ -1,0 +1,99 @@
+# 复刻 VUM 版防火墙区域结构：
+# - 常规：SYN-flood 防御开、丢弃无效数据包关、输入拒绝/出站接受/转发拒绝、
+#   FullCone-NAT 高性能模式（iStoreOS 24.10 中 defaults.fullcone=2 即高性能模式）
+# - 区域：lan（含 lan+IPV6 接口）全接受，转发到 wan、docker；
+#   wan 全接受且开启 IP 动态伪装；docker 全接受，转发到 wan、lan。
+# wan/docker 在本固件中无实体接口，引用悬空不影响运行，与 VUM 版保持一致。
+
+config defaults
+        option input 'REJECT'
+        option output 'ACCEPT'
+        option forward 'REJECT'
+        option synflood_protect '1'
+        option drop_invalid '0'
+        option fullcone '2'
+
+config zone
+        option name 'lan'
+        option input 'ACCEPT'
+        option output 'ACCEPT'
+        option forward 'ACCEPT'
+        list network 'lan'
+        list network 'IPV6'
+
+config zone
+        option name 'wan'
+        option input 'ACCEPT'
+        option output 'ACCEPT'
+        option forward 'ACCEPT'
+        option masq '1'
+        option mtu_fix '1'
+        list network 'wan'
+        list network 'wan6'
+
+config zone
+        option name 'docker'
+        option input 'ACCEPT'
+        option output 'ACCEPT'
+        option forward 'ACCEPT'
+        list network 'docker'
+
+config forwarding
+        option src 'lan'
+        option dest 'wan'
+
+config forwarding
+        option src 'lan'
+        option dest 'docker'
+
+config forwarding
+        option src 'docker'
+        option dest 'wan'
+
+config forwarding
+        option src 'docker'
+        option dest 'lan'
+
+# OpenClash/mihomo TUN 栈专用区域（utun）：本固件特有，VUM 版无此区域
+config zone
+        option name 'tun'
+        option input 'ACCEPT'
+        option output 'ACCEPT'
+        option forward 'ACCEPT'
+        list device 'utun'
+        list device 'tun+'
+
+config forwarding
+        option src 'lan'
+        option dest 'tun'
+
+# 常用入站规则
+config rule
+        option name 'Allow-Ping'
+        option src 'lan'
+        option proto 'icmp'
+        list icmp_type 'echo-request'
+        option target 'ACCEPT'
+
+config rule
+        option name 'Allow-DNS'
+        option src 'lan'
+        option dest_port '53'
+        option proto 'tcp udp'
+        option target 'ACCEPT'
+
+config rule
+        option name 'Allow-OpenClash-DNS'
+        option src 'lan'
+        option dest_port '7891'
+        option proto 'tcp udp'
+        option target 'ACCEPT'
+
+# Clash 外部控制面板：仅局域网可达；如需更高安全性请改为本机 127.0.0.1 或在
+# OpenClash 面板设置里启用 API 鉴权
+config rule
+        option name 'Allow-Clash-API'
+        option src 'lan'
+        option dest_port '9090'
+        option proto 'tcp'
+        option target 'ACCEPT'

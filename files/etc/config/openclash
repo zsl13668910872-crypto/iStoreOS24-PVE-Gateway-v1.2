@@ -1,0 +1,11 @@
+config openclash 'config'
+        option enable '1'
+        option cn_port '7891'
+        option dashboard_password '10.10.10.1'
+        option proxy_mode 'rule'
+        option intranet_allowed '1'
+        option lan_ac_mode '0'
+        option small_flash_memory '0'
+        option enable_meta_core '1'
+        # Fake-IP（增强）为默认运行模式；TUN 已在固件编译层支持，
+        # 如需 Fake-IP（TUN-混合）请在 OpenClash 插件设置中切换并保存。

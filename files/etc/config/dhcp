@@ -1,0 +1,41 @@
+# 复刻 VUM 版 dnsmasq 行为：
+# - DNS 重定向关闭（截图“常规”页未勾选）
+# - 唯一授权开启、本地域 /lan/、扩展 HOSTS 开启
+# - DNS 转发到本机代理 DNS 端口。VUM 版是 127.0.0.1#1053（其自带插件），
+#   本固件对应 OpenClash 的 DNS 监听端口 7874，效果等价：
+#   客户端 -> dnsmasq:53 -> OpenClash:7874（Fake-IP 在此应答）
+config dnsmasq
+        option domainneeded '1'
+        option boguspriv '1'
+        option filterwin2k '0'
+        option localise_queries '1'
+        option rebind_protection '1'
+        option rebind_localhost '1'
+        option local '/lan/'
+        option domain 'lan'
+        option expandhosts '1'
+        option nonegcache '0'
+        option authoritative '1'
+        option readethers '1'
+        option leasefile '/tmp/dhcp.leases'
+        option nonwildcard '1'
+        option localservice '1'
+        option ednspacket_max '1232'
+        option dns_redirect '0'
+        # 只使用下面列出的转发地址，不再读取接口上游（对应截图“转发”页）
+        option noresolv '1'
+        list server '127.0.0.1#7874'
+
+# 旁路由不做 DHCP 服务：由主路由统一分配（对应截图中 lan 的 DHCP 已关闭）
+config dhcp 'lan'
+        option interface 'lan'
+        option ignore '1'
+        option ra 'disabled'
+        option dhcpv6 'disabled'
+        option ra_slaac '0'
+
+config odhcpd 'odhcpd'
+        option maindhcp '0'
+        option leasefile '/tmp/hosts/odhcpd'
+        option leasetrigger '/usr/sbin/odhcpd-update'
+        option loglevel '4'
